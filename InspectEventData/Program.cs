@@ -91,6 +91,69 @@ internal class Program
         }
     }
 
+    public static EncryptedContent GenerateEncryptedContent(
+        string payload,
+        string base64PublicKey,
+        string encryptionCertificateId,
+        string encryptionCertificateThumbprint)
+    {
+        // Convert the Base64-encoded public key to an RSA object
+        byte[] publicKeyBytes = Convert.FromBase64String(base64PublicKey);
+        RSA publicKey = RSA.Create();
+        publicKey.ImportSubjectPublicKeyInfo(publicKeyBytes, out _);
+
+        // 1. Generate a random symmetric key (32 bytes for AES-256)
+        byte[] symmetricKey = new byte[32];
+        using (var rng = RandomNumberGenerator.Create())
+        {
+            rng.GetBytes(symmetricKey);
+        }
+
+        // 2. Encrypt the payload using AES
+        byte[] iv = new byte[16];
+        Array.Copy(symmetricKey, iv, 16); // Use first 16 bytes as IV
+        byte[] encryptedPayload;
+        using (Aes aes = Aes.Create())
+        {
+            aes.Key = symmetricKey;
+            aes.IV = iv;
+            aes.Padding = PaddingMode.PKCS7;
+            aes.Mode = CipherMode.CBC;
+
+            using (var encryptor = aes.CreateEncryptor())
+            using (var ms = new MemoryStream())
+            using (var cs = new CryptoStream(ms, encryptor, CryptoStreamMode.Write))
+            using (var sw = new StreamWriter(cs))
+            {
+                sw.Write(payload);
+                sw.Flush();
+                cs.FlushFinalBlock();
+                encryptedPayload = ms.ToArray();
+            }
+        }
+
+        // 3. Sign the encrypted payload using HMAC-SHA256
+        byte[] signature;
+        using (var hmac = new HMACSHA256(symmetricKey))
+        {
+            signature = hmac.ComputeHash(encryptedPayload);
+        }
+
+        // 4. Encrypt the symmetric key using the public key (RSA)
+        byte[] encryptedSymmetricKey = publicKey.Encrypt(symmetricKey, RSAEncryptionPadding.OaepSHA1);
+
+        // 5. Return the EncryptedContent object
+        return new EncryptedContent
+        {
+            Data = Convert.ToBase64String(encryptedPayload),
+            DataSignature = Convert.ToBase64String(signature),
+            DataKey = Convert.ToBase64String(encryptedSymmetricKey),
+            EncryptionCertificateId = encryptionCertificateId,
+            EncryptionCertificateThumbprint = encryptionCertificateThumbprint
+        };
+    }
+
+
     private static void InspectEventData(EventItem eventItem, string keyVaultName)
     {
         // Construct the Key Vault URL
@@ -254,3 +317,5 @@ public class EncryptedContent
     [JsonPropertyName("encryptionCertificateThumbprint")]
     public string EncryptionCertificateThumbprint { get; set; }
 }
+
+
